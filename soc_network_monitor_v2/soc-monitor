@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+cd "/home/jonathan/Desktop/Collage/2nd year project/soc_network_monitor_v2"
+source .venv/bin/activate
+exec sudo -E env PATH="$PATH" SOC_INTERFACE="${SOC_INTERFACE:-}" SOC_BPF="${SOC_BPF:-ip or ip6 or arp}" python app.py

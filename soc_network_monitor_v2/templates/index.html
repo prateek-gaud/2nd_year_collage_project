@@ -1,0 +1,214 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SOC Network Monitor v2</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <div class="eyebrow">SOC / NETWORK DETECTION & ANALYSIS</div>
+        <h1>Network Monitoring Console <span id="live">● LIVE</span></h1>
+      </div>
+      <div class="controls">
+        <select id="iface"></select
+        ><button onclick="applyInterface()">SELECT INTERFACE</button
+        ><select id="period">
+          <option value="30">30s</option>
+          <option value="300">5m</option>
+          <option value="3600">1h</option>
+        </select>
+      </div>
+    </header>
+    <nav>
+      <button onclick="downloadFile('alerts', 'csv')">Export Alerts CSV</button
+      ><button onclick="downloadFile('alerts', 'json')">
+        Export Alerts JSON</button
+      ><button onclick="downloadFile('packets', 'csv')">
+        Export Packets CSV</button
+      ><button onclick="downloadFile('packets', 'json')">
+        Export Packets JSON</button
+      ><button class="danger" onclick="clearAlerts()">Clear Alerts</button>
+    </nav>
+    <main>
+      <section class="cards">
+        <div class="card">
+          <small>PACKETS</small><strong id="packets">0</strong>
+        </div>
+        <div class="card">
+          <small>TRAFFIC</small><strong id="bytes">0 B</strong>
+        </div>
+        <div class="card">
+          <small>ALERTS</small><strong id="alertsCount">0</strong>
+        </div>
+        <div class="card">
+          <small>DROPPED</small><strong id="dropped">0</strong>
+        </div>
+        <div class="card"><small>CPU</small><strong id="cpu">0%</strong></div>
+        <div class="card">
+          <small>MEMORY</small><strong id="mem">0%</strong>
+        </div>
+      </section>
+      <section class="grid">
+        <div class="panel">
+          <div class="title">Protocol Distribution</div>
+          <canvas id="chart"></canvas>
+        </div>
+        <div class="panel">
+          <div class="title">Top Talkers</div>
+          <table>
+            <thead>
+              <tr>
+                <th>IP</th>
+                <th>Packets</th>
+                <th>Bytes</th>
+              </tr>
+            </thead>
+            <tbody id="talkers"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="title">
+          Detection / Alert Queue
+          <button onclick="loadAlerts()">Refresh</button>
+        </div>
+        <div id="alertList"></div>
+      </section>
+      <section class="panel">
+        <div class="title">Active Network Flows</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Destination</th>
+              <th>Protocol</th>
+              <th>Ports</th>
+              <th>Packets</th>
+              <th>Bytes</th>
+              <th>Last Seen</th>
+            </tr>
+          </thead>
+          <tbody id="flows"></tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <div class="title">SOC Analyst Notes</div>
+        <div class="notes">
+          <b>Current detections:</b> TCP port-scan heuristic, cleartext protocol
+          observation, long DNS query, large packet heuristic.<br /><b
+            >Next integrations:</b
+          >
+          Suricata, Zeek, threat intelligence, SIEM, asset inventory,
+          authentication/RBAC, PCAP retention and incident case management.
+        </div>
+      </section>
+    </main>
+    <script>
+      let chart;
+      const $ = (x) => document.getElementById(x);
+      function esc(s) {
+        return String(s ?? "").replace(
+          /[&<>"']/g,
+          (m) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[m],
+        );
+      }
+      function bytes(n) {
+        if (n < 1024) return n + " B";
+        if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+        if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
+        return (n / 1073741824).toFixed(2) + " GB";
+      }
+      async function interfaces() {
+        let r = await fetch("/api/interfaces"),
+          d = await r.json();
+        $("iface").innerHTML = d
+          .map(
+            (x) =>
+              `<option value="${esc(x.name)}">${esc(x.name)} ${x.up ? "(UP)" : "(DOWN)"}</option>`,
+          )
+          .join("");
+      }
+      function applyInterface() {
+        let i = $("iface").value;
+        alert(
+          "Interface selection is applied at process start. Restart with: sudo SOC_INTERFACE=" +
+            i +
+            " soc-monitor",
+        );
+      }
+      function downloadFile(k, f) {
+        location.href = "/export/" + k + "/" + f;
+      }
+      async function clearAlerts() {
+        if (!confirm("Clear stored alerts?")) return;
+        await fetch("/api/clear-alerts", { method: "POST" });
+        refresh();
+      }
+      function renderAlerts(a) {
+        $("alertList").innerHTML =
+          a
+            .map(
+              (x) =>
+                `<div class="alert ${esc(x.severity)}"><span>${esc(x.severity).toUpperCase()}</span><div><b>${esc(x.rule)}</b><p>${esc(x.message)}</p><small>${esc(x.src_ip || "-")} → ${esc(x.dst_ip || "-")} · ${new Date(x.ts).toLocaleString()}</small></div></div>`,
+            )
+            .join("") || "<div class=empty>No alerts.</div>";
+      }
+      async function refresh() {
+        let r = await fetch("/api/overview"),
+          d = await r.json();
+        $("packets").textContent = d.packets.toLocaleString();
+        $("bytes").textContent = bytes(d.bytes);
+        $("alertsCount").textContent = d.alerts.length;
+        $("dropped").textContent = d.dropped;
+        $("cpu").textContent = d.system.cpu + "%";
+        $("mem").textContent = d.system.memory_percent + "%";
+        let p = d.protocols;
+        if (!chart)
+          chart = new Chart($("chart"), {
+            type: "doughnut",
+            data: {
+              labels: Object.keys(p),
+              datasets: [{ data: Object.values(p) }],
+            },
+            options: { plugins: { legend: { position: "right" } } },
+          });
+        else {
+          chart.data.labels = Object.keys(p);
+          chart.data.datasets[0].data = Object.values(p);
+          chart.update("none");
+        }
+        $("talkers").innerHTML = d.talkers
+          .map(
+            (x) =>
+              `<tr><td>${esc(x.ip)}</td><td>${x.packets}</td><td>${bytes(x.bytes)}</td></tr>`,
+          )
+          .join("");
+        $("flows").innerHTML = d.flows
+          .map(
+            (x) =>
+              `<tr><td>${esc(x.src)}</td><td>${esc(x.dst)}</td><td>${esc(x.protocol)}</td><td>${x.sport ?? "-"} → ${x.dport ?? "-"}</td><td>${x.packets}</td><td>${bytes(x.bytes)}</td><td>${new Date(x.last_seen).toLocaleTimeString()}</td></tr>`,
+          )
+          .join("");
+        renderAlerts(d.alerts);
+      }
+      async function loadAlerts() {
+        let r = await fetch("/api/alerts?limit=200");
+        renderAlerts(await r.json());
+      }
+      interfaces();
+      refresh();
+      setInterval(refresh, 2000);
+    </script>
+  </body>
+</html>
